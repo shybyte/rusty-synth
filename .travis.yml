@@ -14,3 +14,8 @@ before_install:
 install:
   - sudo apt-get update -qq
   - sudo apt-get install -q -y libsdl2-dev
+
+addons:
+  apt:
+    packages:
+      - libportmidi-dev
