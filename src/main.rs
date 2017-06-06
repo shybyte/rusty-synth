@@ -7,18 +7,26 @@ extern crate chan_signal;
 use std::f32;
 use chan_signal::Signal;
 use std::thread;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use pm::{PortMidi};
 
 
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use std::time::Duration;
 
+#[derive(Debug)]
+enum Command {
+    NoteOn(f32),
+    NoteOff()
+}
+
 struct SquareWave {
-    freq: Arc<Mutex<f32>>,
+    commands: mpsc::Receiver<Command>,
+    freq: f32,
     phase: f32,
     volume: f32,
     spec_freq: f32,
+    is_on: bool
 }
 
 impl AudioCallback for SquareWave {
@@ -26,8 +34,24 @@ impl AudioCallback for SquareWave {
 
     fn callback(&mut self, out: &mut [f32]) {
         // Generate a square wave
-        let phase_inc: f32 = (*self.freq.lock().unwrap()) / self.spec_freq;
+        for command in self.commands.try_iter() {
+            println!("command = {:?}, {:?}", command, out.len());
+            match command {
+                Command::NoteOn(freq) => {
+                    self.freq = freq;
+                    self.is_on = true;
+                }
+                Command::NoteOff() => {
+                    self.is_on = false;
+                }
+            }
+        }
+        let phase_inc: f32 = self.freq / self.spec_freq;
         for x in out.iter_mut() {
+            if !self.is_on {
+                *x = 0.0;
+                continue;
+            }
             *x = match self.phase {
                 0.0 ... 0.5 => self.volume,
                 _ => -self.volume
@@ -91,19 +115,19 @@ fn main() {
         samples: None       // default sample size
     };
 
-    let freq = Arc::new(Mutex::new(440.0));
-
-    let freq_clone = freq.clone();
+    let (tx_audio, rx_audio) = mpsc::channel();
 
     let device = audio_subsystem.open_playback(None, &desired_spec, |spec| {
         // Show obtained AudioSpec
         println!("{:?}", spec);
 
         SquareWave {
-            freq: freq_clone,
+            commands: rx_audio,
+            freq: 220.0,
             spec_freq: spec.freq as f32,
             phase: 0.0,
-            volume: 0.25
+            volume: 0.25,
+            is_on: false
         }
     }).unwrap();
 
@@ -120,11 +144,13 @@ fn main() {
                         192 => {
                             println!("program change {:?}", event.message);
                         },
-                        144 => {
-                            let mut freq_pointer= freq.lock().unwrap();
+                        0x90 => {
                             let midi_note = event.message.data1;
                             let f =  (2.0 as f32).powf((midi_note as f32 - 57.0) / 12.0) * 220.0;
-                            *freq_pointer = f;
+                            tx_audio.send(Command::NoteOn(f)).unwrap();
+                        },
+                        0x80 => {
+                            tx_audio.send(Command::NoteOff()).unwrap();
                         }
                         _ => {
                             println!("event = {:?}", event);
